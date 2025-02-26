@@ -6,6 +6,8 @@ db.serialize(() => {
         CREATE TABLE IF NOT EXISTS files (
             id TEXT PRIMARY KEY,
             fileName TEXT,
+            originalName TEXT, // NEW
+            mimeType TEXT,    // NEW
             b2FileId TEXT,
             password TEXT,
             expiresAt DATETIME,

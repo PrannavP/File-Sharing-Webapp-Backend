@@ -27,6 +27,8 @@ exports.uploadFile = async (req, res) => {
 
         const { password } = req.body;
         const file = req.file;
+        const originalName = file.originalName;
+        const mimeType = file.mimeType;
         const fileId = uuidv4();
 
         // Encrypt file
@@ -47,9 +49,9 @@ exports.uploadFile = async (req, res) => {
 
         // Store metadata
         db.run(
-            `INSERT INTO files (id, fileName, b2FileId, password, expiresAt)
-             VALUES (?, ?, ?, ?, datetime('now', '+7 days'))`,
-            [fileId, file.originalname, b2File.data.fileId, password],
+            `INSERT INTO files (id, fileName, originalName, mimeType, b2FileId, password, expiresAt)
+             VALUES (?, ?, ?, ?, ?, ?, datetime('now', '+7 days'))`,
+            [fileId, file.originalname, originalName, mimeType, b2File.data.fileId, password],
             (err) => {
                 if (err) return res.status(500).json({ error: err.message });
                 res.json({ fileId });
@@ -69,29 +71,51 @@ exports.downloadFile = async (req, res) => {
             `SELECT * FROM files WHERE id = ?`,
             [fileId],
             async (err, row) => {
-                if (err || !row) return res.status(404).send('File not found');
+                if (err || !row) {
+                    return res.status(404).json({ error: 'File not found' });
+                }
 
-                // Download from Backblaze
-                await b2.authorize();
-                const file = await b2.downloadFileById({
-                    fileId: row.b2FileId,
-                    responseType: 'arraybuffer'
-                });
+                try {
+                    // Download from Backblaze
+                    await b2.authorize();
+                    const file = await b2.downloadFileById({
+                        fileId: row.b2FileId,
+                        responseType: 'arraybuffer'
+                    });
 
-                // Decrypt file
-                const decrypted = decryptFile(
-                    Buffer.from(file.data).toString(),
-                    password
-                );
+                    // Decrypt file
+                    const decrypted = decryptFile(
+                        Buffer.from(file.data).toString(),
+                        password
+                    );
 
-                res.set({
-                    'Content-Type': 'application/octet-stream',
-                    'Content-Disposition': `attachment; filename=${row.fileName}`
-                });
-                res.send(decrypted);
+                    // Update download count
+                    db.run(
+                        `UPDATE files SET downloadCount = downloadCount + 1 WHERE id = ?`,
+                        [fileId]
+                    );
+
+                    // Set proper headers
+                    res.set({
+                        'Content-Type': row.mimeType,
+                        'Content-Disposition': `attachment; filename="${row.originalName}"`,
+                        'Content-Length': decrypted.length
+                    });
+
+                    res.send(decrypted);
+
+                } catch (err) {
+                    console.error('Download error:', err);
+                    if (err.message.includes('Decryption failed')) {
+                        res.status(401).json({ error: 'Invalid password' });
+                    } else {
+                        res.status(500).json({ error: 'Download failed' });
+                    }
+                }
             }
         );
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error('Server error:', err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 };
